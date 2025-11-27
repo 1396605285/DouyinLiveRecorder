@@ -49,6 +49,6 @@ jobs:
           tags: |
             ihmily/douyin-live-recorder:${{ github.event.inputs.tag_name || github.ref_name }} 
             ihmily/douyin-live-recorder:latest
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache
