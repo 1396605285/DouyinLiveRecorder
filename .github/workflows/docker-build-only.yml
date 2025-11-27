@@ -1,14 +1,13 @@
 name: Build Only Docker Image (arm32v7)
 
-# 触发条件：推送到 main 分支 或 手动触发（按需调整）
 on:
   push:
     branches: [ main ]
-    paths: # 仅修改核心文件时触发，减少无用构建
+    paths:
       - 'Dockerfile'
       - 'requirements.txt'
       - '.github/workflows/docker-build-only.yml'
-  workflow_dispatch: # 允许手动触发（在 GitHub 仓库 Actions 页面点击运行）
+  workflow_dispatch: # 支持手动触发
 
 jobs:
   build-arm32v7:
@@ -18,42 +17,60 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 步骤 2：设置 Docker Buildx（支持多架构构建）
+      # 步骤 2：安装 QEMU 模拟器（关键！arm32v7 需模拟构建）
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm # 启用 arm 架构模拟（包含 arm32v7）
+
+      # 步骤 3：设置 Docker Buildx（支持多架构 + 模拟）
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          # 启用构建缓存（可选，加速下次构建）
           driver-opts: |
-            env.BUILDKIT_STEP_LOG_MAX_SIZE=10485760
+            env.BUILDKIT_STEP_LOG_MAX_SIZE=10485760 # 增大日志限制，避免编译日志截断
 
-      # 步骤 3：提取镜像标签（仅用于本地识别，不推送）
+      # 步骤 4：动态修改 Dockerfile（关键！添加编译依赖 + 国内 pip 源）
+      # 无需手动改原仓库 Dockerfile，通过 sed 命令在构建前注入配置
+      - name: Inject build dependencies & pip mirror into Dockerfile
+        run: |
+          # 在 Dockerfile 的 "RUN apt-get update" 前，添加编译依赖（gcc、libc-dev 等）
+          sed -i 's/^RUN apt-get update/RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libffi-dev && rm -rf \/var\/lib\/apt\/lists\/*\nRUN apt-get update/' Dockerfile
+          # 在 pip install 命令后添加国内源（阿里云），加速依赖下载
+          sed -i 's/pip install --no-cache-dir -r requirements.txt/pip install --no-cache-dir -i https:\/\/mirrors.aliyun.com\/pypi\/simple\/ -r requirements.txt/' Dockerfile
+          # 查看修改后的 Dockerfile（便于日志排查）
+          cat Dockerfile
+
+      # 步骤 5：提取镜像标签
       - name: Extract metadata (tags)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: douyin-live-recorder # 自定义镜像名（仅本地标识，无仓库前缀）
+          images: douyin-live-recorder
           tags: |
-            type=ref,event=branch # 标签：分支名（如 main）
-            type=sha,format=short # 标签：commit 短哈希（如 a1b2c3d）
-            type=raw,value=arm32v7-latest # 固定标签：arm32v7-latest
+            type=ref,event=branch
+            type=sha,format=short
+            type=raw,value=arm32v7-latest
 
-      # 步骤 4：构建 arm32v7 镜像（仅构建，不推送）
+      # 步骤 6：构建 arm32v7 镜像（修复后）
       - name: Build Docker image (arm32v7)
         uses: docker/build-push-action@v5
         with:
-          context: . # 构建上下文（仓库根目录）
-          file: ./Dockerfile # 目标仓库的 Dockerfile 在根目录，无需修改
-          push: false # 关键：关闭镜像推送
-          platforms: linux/arm/v7 # 明确构建 arm32v7 架构（对应 linux/arm/v7）
-          tags: ${{ steps.meta.outputs.tags }} # 复用步骤 3 生成的标签
-          cache-from: type=gha # 缓存构建层（加速下次构建）
-          cache-to: type=gha,mode=max # 最大程度保留缓存
-          outputs: type=docker,dest=/tmp/douyin-live-recorder-arm32v7.tar # 可选：将镜像保存为 tar 包
+          context: .
+          file: ./Dockerfile
+          push: false # 仅构建，不推送
+          platforms: linux/arm/v7 # 明确 arm32v7 架构
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          outputs: type=docker,dest=/tmp/douyin-live-recorder-arm32v7.tar # 保存为 tar 包
+          # 额外优化：增加构建超时时间（模拟编译可能较慢）
+          timeout: 30m
 
-      # 步骤 5：（可选）上传镜像 tar 包到 GitHub Artifact（便于本地下载）
+      # 步骤 7：上传镜像 tar 包（可选，便于本地下载）
       - name: Upload image tar to Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: douyin-live-recorder-arm32v7 # 下载时的文件包名
-          path: /tmp/douyin-live-recorder-arm32v7.tar # 镜像 tar 包路径
-          retention-days: 7 #  artifact 保留 7 天（按需调整）
+          name: douyin-live-recorder-arm32v7
+          path: /tmp/douyin-live-recorder-arm32v7.tar
+          retention-days: 7
