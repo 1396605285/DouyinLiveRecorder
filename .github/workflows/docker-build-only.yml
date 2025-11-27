@@ -1,0 +1,59 @@
+name: Build Only Docker Image (arm32v7)
+
+# 触发条件：推送到 main 分支 或 手动触发（按需调整）
+on:
+  push:
+    branches: [ main ]
+    paths: # 仅修改核心文件时触发，减少无用构建
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - '.github/workflows/docker-build-only.yml'
+  workflow_dispatch: # 允许手动触发（在 GitHub 仓库 Actions 页面点击运行）
+
+jobs:
+  build-arm32v7:
+    runs-on: ubuntu-latest
+    steps:
+      # 步骤 1：拉取仓库代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 步骤 2：设置 Docker Buildx（支持多架构构建）
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # 启用构建缓存（可选，加速下次构建）
+          driver-opts: |
+            env.BUILDKIT_STEP_LOG_MAX_SIZE=10485760
+
+      # 步骤 3：提取镜像标签（仅用于本地识别，不推送）
+      - name: Extract metadata (tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: douyin-live-recorder # 自定义镜像名（仅本地标识，无仓库前缀）
+          tags: |
+            type=ref,event=branch # 标签：分支名（如 main）
+            type=sha,format=short # 标签：commit 短哈希（如 a1b2c3d）
+            type=raw,value=arm32v7-latest # 固定标签：arm32v7-latest
+
+      # 步骤 4：构建 arm32v7 镜像（仅构建，不推送）
+      - name: Build Docker image (arm32v7)
+        uses: docker/build-push-action@v5
+        with:
+          context: . # 构建上下文（仓库根目录）
+          file: ./Dockerfile # 目标仓库的 Dockerfile 在根目录，无需修改
+          push: false # 关键：关闭镜像推送
+          platforms: linux/arm/v7 # 明确构建 arm32v7 架构（对应 linux/arm/v7）
+          tags: ${{ steps.meta.outputs.tags }} # 复用步骤 3 生成的标签
+          cache-from: type=gha # 缓存构建层（加速下次构建）
+          cache-to: type=gha,mode=max # 最大程度保留缓存
+          outputs: type=docker,dest=/tmp/douyin-live-recorder-arm32v7.tar # 可选：将镜像保存为 tar 包
+
+      # 步骤 5：（可选）上传镜像 tar 包到 GitHub Artifact（便于本地下载）
+      - name: Upload image tar to Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: douyin-live-recorder-arm32v7 # 下载时的文件包名
+          path: /tmp/douyin-live-recorder-arm32v7.tar # 镜像 tar 包路径
+          retention-days: 7 #  artifact 保留 7 天（按需调整）
