@@ -1,91 +1,87 @@
-name: Build Arm32v7 Docker Image (Stable)
+name: Build Arm32v7 Docker Image (With Node.js)
 
 on:
-  workflow_dispatch: # 仅支持手动触发（避免自动构建干扰，点击即可运行）
+  workflow_dispatch: # 手动触发
 
 jobs:
   build-arm32v7:
     runs-on: ubuntu-latest
-    timeout-minutes: 45 # 足够的超时时间，适配模拟编译
+    timeout-minutes: 45
     steps:
-      # 步骤 1：拉取原仓库代码（确保获取最新的 Python 代码和 requirements.txt）
       - name: Checkout original code
         uses: actions/checkout@v4
         with:
-          repository: ihmily/DouyinLiveRecorder # 直接拉取目标仓库（无需 Fork，也可替换为你的 Fork 地址）
-          ref: main # 拉取 main 分支
+          repository: ihmily/DouyinLiveRecorder
+          ref: main
 
-      # 步骤 2：安装 QEMU 模拟器（arm32v7 必须，模拟 ARM 环境）
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: linux/arm/v7 # 精准指定 arm32v7 模拟，不冗余
+          platforms: linux/arm/v7
 
-      # 步骤 3：设置 Docker Buildx（支持多架构 + 缓存）
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver-opts: |
-            env.BUILDKIT_STEP_LOG_MAX_SIZE=52428800 # 增大日志缓存，避免编译日志截断
+            env.BUILDKIT_STEP_LOG_MAX_SIZE=52428800
 
-      # 步骤 4：创建全新的、适配 arm32v7 的 Dockerfile（核心！无 sed 替换，零错误）
-      - name: Create arm32v7-compatible Dockerfile
+      # 核心修改：创建带 Node.js 16 的 Dockerfile（适配 arm32v7）
+      - name: Create arm32v7-compatible Dockerfile (with Node.js)
         run: |
           cat > Dockerfile.arm32v7 << 'EOF'
-          # 基础镜像：选择支持 arm32v7 的 Python 3.11（多架构镜像，自动适配）
           FROM python:3.11-slim-bookworm
 
-          # 替换为阿里云 Debian 源（解决 arm32v7 环境 apt 下载慢）
+          # 替换阿里云 Debian 源
           RUN sed -i "s/deb.debian.org/mirrors.aliyun.com/g" /etc/apt/sources.list.d/debian.sources \
               && sed -i "s/security.debian.org/mirrors.aliyun.com/g" /etc/apt/sources.list.d/debian.sources
 
-          # 安装依赖：ffmpeg（核心功能） + 编译工具（Python 包需要 C 编译）
+          # 安装依赖：ffmpeg + 编译工具 + Node.js 依赖（curl、xz-utils）
           RUN apt-get update && apt-get install -y --no-install-recommends \
-              ffmpeg \
-              gcc \
-              libc6-dev \
-              libffi-dev \
-              && rm -rf /var/lib/apt/lists/* # 清理缓存，缩小镜像体积
+              ffmpeg gcc libc6-dev libffi-dev curl xz-utils \
+              && rm -rf /var/lib/apt/lists/*
+
+          # 安装 Node.js 16.20.2（最后支持 arm32v7 的 LTS 版）
+          RUN curl -fsSL https://nodejs.org/dist/v16.20.2/node-v16.20.2-linux-armv7l.tar.xz -o node.tar.xz \
+              && tar -xJf node.tar.xz -C /usr/local --strip-components=1 \
+              && rm -f node.tar.xz \
+              && node -v && npm -v # 验证安装成功
 
           # 设置工作目录
           WORKDIR /app
 
-          # 复制依赖文件（优先复制，利用 Docker 层缓存）
+          # 复制依赖文件并安装 Python 依赖
           COPY requirements.txt .
-
-          # 替换 pip 为阿里云源，安装 Python 依赖（--no-cache-dir 避免缓存占用空间）
           RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ \
               --trusted-host mirrors.aliyun.com \
               -r requirements.txt
 
-          # 复制所有应用代码
+          # 复制应用代码
           COPY . .
 
-          # 启动命令（和原仓库保持一致）
+          # 启动命令
           CMD ["python", "main.py"]
           EOF
 
-          # 查看创建的 Dockerfile（日志中可验证，确保无语法错误）
-          echo "✅ 生成的 arm32v7 Dockerfile 内容："
+          # 查看 Dockerfile 内容
           cat Dockerfile.arm32v7
 
-      # 步骤 5：构建 arm32v7 镜像（仅构建，不推送）
+      # 构建镜像
       - name: Build arm32v7 Docker image
         uses: docker/build-push-action@v5
         with:
-          context: . # 构建上下文：仓库根目录（包含 requirements.txt 和代码）
-          file: ./Dockerfile.arm32v7 # 使用我们创建的适配版 Dockerfile
-          push: false # 关键：仅构建，不推送任何仓库
-          platforms: linux/arm/v7 # 精准指定 arm32v7 架构（Docker 标准标识）
-          tags: douyin-live-recorder:arm32v7-stable # 自定义镜像标签，便于识别
-          cache-from: type=gha # 启用 GitHub Actions 缓存，加速下次构建
+          context: .
+          file: ./Dockerfile.arm32v7
+          push: false
+          platforms: linux/arm/v7
+          tags: douyin-live-recorder:arm32v7-with-nodejs
+          cache-from: type=gha
           cache-to: type=gha,mode=max
-          outputs: type=docker,dest=/tmp/douyin-live-recorder-arm32v7.tar # 保存镜像为 tar 包，方便下载
+          outputs: type=docker,dest=/tmp/douyin-live-recorder-arm32v7.tar
 
-      # 步骤 6：上传镜像 tar 包到 Artifact（可直接下载到本地使用）
+      # 上传镜像
       - name: Upload image tar to Artifact
         uses: actions/upload-artifact@v4
         with:
           name: douyin-live-recorder-arm32v7
           path: /tmp/douyin-live-recorder-arm32v7.tar
-          retention-days: 14 # 保留 14 天，足够下载
+          retention-days: 14
